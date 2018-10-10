@@ -1,0 +1,279 @@
+---
+title: "buildProbabilisticClassifier_comb"
+author: "Lincoln Harris"
+date: "4/16"
+output: html_document
+
+### Workflow for building a RF classifier that spits out probabilities, rather than 
+###   discreet cell type assignments, from Linnearson hippo data
+###
+### Make sure mRF_func.R and externalFuncs.R are in the environment
+###
+### 4.13. What happens if i create separate Seurat objects, combine them, then train 
+### classifier on this combined object? 
+###
+### THIS WORKS!!!
+---
+
+read in hippo loom file
+```{r}
+hippo_loom <- connect(filename = "l1_hippocampus.loom", mode = "r+")
+amyg_loom <- connect(filename = "l1_amygdala.loom", mode = "r+")
+```
+
+coerce into dfs
+```{r}
+data_mat_h <- hippo_loom$matrix[,]
+class(data_mat_h)
+data_mat_h <- as.data.frame(data_mat_h)
+class(data_mat_h)
+dim(data_mat_h)
+
+data_mat_a <- amyg_loom$matrix[,]
+class(data_mat_a)
+data_mat_a <- as.data.frame(data_mat_a)
+class(data_mat_a)
+dim(data_mat_a)
+```
+
+need to transpose bc genes and cells are inverted for some reason
+```{r}
+data_mat_h <- t(data_mat_h)
+data_mat_a <- t(data_mat_a)
+dim(data_mat_h)
+dim(data_mat_a)
+```
+
+get vectors for gene and cell names
+```{r}
+# gives me gene names
+hippo_genes <- hippo_loom$row.attrs$Gene[]
+amyg_genes <- amyg_loom$row.attrs$Gene[]
+length(hippo_genes)
+length(amyg_genes)
+
+# gives me cell names 
+hippo_cells <- hippo_loom$col.attrs$CellID[]
+amyg_cells <- amyg_loom$col.attrs$CellID[]
+length(hippo_cells)
+length(amyg_cells)
+
+# setting row and col names for raw dfs
+row.names(data_mat_h) <- hippo_genes
+colnames(data_mat_h) <- hippo_cells
+
+row.names(data_mat_a) <- amyg_genes
+colnames(data_mat_a) <- amyg_cells
+```
+
+do we have dups in our cell names? 
+```{r}
+h_unique <- unique(hippo_cells)
+a_unique <- unique(amyg_cells)
+
+# also need a list of the duplicated elements
+h_dups_index <- duplicated(hippo_cells)
+a_dups_index <- duplicated(amyg_cells)
+
+h_dups_cells <- hippo_cells[h_dups_index]
+a_dups_cells <- amyg_cells[a_dups_index]
+
+length(hippo_cells)
+length(amyg_cells)
+
+length(h_unique)
+length(a_unique)
+
+length(h_dups_cells)
+length(a_dups_cells)
+```
+
+what about duplicate gene names? 
+```{r}
+length(unique(hippo_genes))
+length(unique(amyg_genes))
+
+h_dups_genes_index <- duplicated(hippo_genes)
+a_dups_genes_index <- duplicated(amyg_genes)
+
+h_dups_genes <- hippo_genes[h_dups_genes_index]
+a_dups_genes <- amyg_genes[a_dups_genes_index]
+
+length(h_dups_genes)
+length(a_dups_genes)
+```
+
+
+Want to remove dups (cells AND genes) from raw data
+```{r}
+# get list of cells without ANY of the duplicated cells
+hippo_cells_no_dups <- hippo_cells[!(hippo_cells %in% h_dups_cells)]
+amyg_cells_no_dups <- amyg_cells[!(amyg_cells %in% a_dups_cells)]
+
+# get list of genes without ANY of the duplicated ones
+hippo_genes_no_dups <- hippo_genes[!(hippo_genes %in% h_dups_genes)]
+amyg_genes_no_dups <- amyg_genes[!(amyg_genes %in% a_dups_genes)]
+
+data_mat_h_no_dups <- data_mat_h[hippo_genes_no_dups, hippo_cells_no_dups]
+data_mat_a_no_dups <- data_mat_a[amyg_genes_no_dups, amyg_cells_no_dups]
+
+dim(data_mat_h_no_dups)
+dim(data_mat_a_no_dups)
+```
+
+get cell_type from loom file metadata
+```{r}
+unique(hippo_loom$col.attrs$Class[])
+h_cell_type <- hippo_loom$col.attrs$Class[]
+h_subclass <- hippo_loom$col.attrs$Subclass[]
+
+unique(amyg_loom$col.attrs$Class[])
+a_cell_type <- amyg_loom$col.attrs$Class[]
+a_subclass <- amyg_loom$col.attrs$Subclass[]
+
+length(h_cell_type)
+length(h_subclass)
+length(a_cell_type)
+length(a_subclass)
+```
+
+make my own metadata df
+  these guys need dims of the initial (+ dups) dfs
+```{r}
+h_meta <- data.frame(matrix(nrow = 29519, ncol = 0))
+h_meta$cell_names <- hippo_cells
+h_meta$cell_type <- h_cell_type
+h_meta$subclass <- h_subclass
+
+a_meta <- data.frame(matrix(nrow = 25414, ncol = 0))
+a_meta$cell_names <- amyg_cells
+a_meta$cell_type <- a_cell_type
+a_meta$subclass <- a_subclass
+```
+
+remove dups from metadata
+```{r}
+dim(h_meta)
+dim(a_meta)
+
+# need to do this instead of standard subsetting (ie. df2 <- df1[,cellsKeep])
+#   bc we dont have rownames yet
+h_meta_no_dups <- h_meta[!(h_meta$cell_names %in% h_dups_cells), ]
+a_meta_no_dups <- a_meta[!(a_meta$cell_names %in% a_dups_cells), ]
+
+dim(h_meta_no_dups)
+dim(a_meta_no_dups)
+
+#and now add the rownames
+row.names(h_meta_no_dups) <- hippo_cells_no_dups
+h_meta_no_dups$cell_names <- NULL
+
+row.names(a_meta_no_dups) <- amyg_cells_no_dups
+a_meta_no_dups$cell_names <- NULL
+```
+
+add metadata field so we can keep track of where all of the cells came from
+```{r}
+h_meta_no_dups$origin <- "hippo"
+a_meta_no_dups$origin <- "amyg"
+```
+
+//////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////
+
+Create Seurat Objects
+```{r}
+hippo <- CreateSeuratObject(raw.data = data_mat_h_no_dups, meta.data = h_meta_no_dups)
+amyg <- CreateSeuratObject(raw.data = data_mat_a_no_dups, meta.data = a_meta_no_dups)
+```
+
+MERGE SEURAT OBJECTS
+  is this the right place to do the merge? 
+```{r}
+merged <- MergeSeurat(hippo, amyg, do.normalize = T, do.scale = F, do.center = F)
+```
+
+//////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////
+
+STANDARD SEURAT WORKFLOW
+
+  not sure if i need to do this here? 
+Seurat looks for UMI values in the gene expression matrix, for some reason. We need to tell it to look for n reads instead 
+```{r}
+colnames(merged@meta.data)[colnames(merged@meta.data) == 'nUMI'] <- 'nReads'
+```
+
+Find any ribosomal associated gene
+```{r}
+ribo.genes <- grep(pattern = "^Rp[sl][[:digit:]]", x = rownames(x = merged@data), value = TRUE)
+```
+
+Calculate percent ribo genes
+```{r}
+percent.ribo <- Matrix::colSums(merged@raw.data[ribo.genes,])/Matrix::colSums(merged@raw.data)
+```
+
+Add a percent ribo gene col to metadata (now a part of seurat obj)
+```{r}
+merged <- AddMetaData(object = merged, metadata = percent.ribo, col.name = "percent.ribo")
+```
+
+Sanity check: plot genes per cell vs reads per cell.
+```{r}
+GenePlot(object = merged, gene1 = "nReads", gene2 = "nGene", use.raw=T)
+```
+
+Filter cells by expression/gene count low/high thresholds
+  what if we skip this step? 
+```{r}
+#merged <- FilterCells(object = merged, subset.names = c("nGene", "nReads"), low.thresholds = c(500, 50000), high.thresholds = c(25000, 2000000))
+```
+
+Normalize and scale
+```{r}
+# normalization has already been done
+#merged <- NormalizeData(object = merged)
+merged <- ScaleData(object = merged)
+# predicting failure here
+merged <- FindVariableGenes(object = merged, do.plot = TRUE, x.high.cutoff = Inf, y.cutoff = 0.5)
+merged <- RunPCA(object = merged, do.print = FALSE)
+merged <- ProjectPCA(object = merged, do.print = FALSE)
+```
+
+running checks here
+```{r}
+PCElbowPlot(object = merged)
+```
+
+Find Clusters (Can play around with k.param. Default is 30. Decrease for smaller number of cells)
+```{r}
+merged <- FindClusters(object = merged, reduction.type = "pca", dims.use = 1:10, resolution = 0.5, print.output = 0, save.SNN = TRUE, force.recalc = TRUE)
+```
+
+Running the actual tSNE here
+```{r}
+merged <- RunTSNE(object = merged, dims.use = 1:10, seed.use = 10)
+```
+
+…and visualize
+```{r}
+TSNEPlot(object = merged, do.label = T)
+TSNEPlot(object = merged, do.label = T, group.by = "origin")
+```
+
+//////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////
+
+BUILD CLASSIFIER
+  make sure external funcs are in the environment
+```{r}
+mergedClass_prob <- myRF_func(merged, training.classes = merged@meta.data$subclass, training.genes = row.names(merged@data))
+```
+
+//////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////

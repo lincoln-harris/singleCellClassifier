@@ -1,0 +1,29 @@
+---
+title: "outlierTest.Rmd"
+author: "Lincoln Harris"
+date: "4/16/18"
+output: html_document
+
+### Want to test a classifier on an outlier dataset, very far removed form what
+###   it was trained on
+### maybe my lungNE cells on a classifier built form hippocampus? 
+---
+
+run classifier
+```{r}
+outTest <- ClassifyCells(classifier = amyg_class, new.data = fetalLung@scale.data)
+View(outTest)
+outTest <- as.data.frame(outTest)
+```
+
+there has to be an easier way
+```{r}
+outTest_max <- data.frame(matrix(ncol = 0, nrow = 22))
+row.names(outTest_max) <- colnames(outTest)
+outTest_max$max <- NA
+
+for(i in 1:length(row.names(outTest_max))){
+ outTest_max[i,] <- max(outTest[,i])
+}
+```
+
